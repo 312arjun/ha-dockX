@@ -107,8 +107,8 @@ PATH*.
 
 ```powershell
 cd F:\Projects
-git clone https://github.com/<your-username>/ha-dock.git
-cd ha-dock
+git clone https://github.com/312arjun/ha-dockX.git
+cd ha-dockX
 ```
 
 No git? Download the ZIP from the repo's green *Code* button and extract it.
