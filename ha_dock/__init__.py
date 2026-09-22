@@ -1,3 +1,3 @@
-"""HA Dock - a codenotch-style screen-edge notch for Home Assistant."""
+﻿"""HA Dock - a codenotch-style screen-edge notch for Home Assistant."""
 
-__version__ = "0.3.0"
+__version__ = "1.0.0"
