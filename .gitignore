@@ -1,0 +1,15 @@
+.venv/
+build/
+dist/
+*.spec
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.db
+*.db-wal
+*.db-shm
+.vscode/
+.idea/
+*.log
