@@ -28,11 +28,17 @@ WS_EX_TOPMOST = 0x00000008
 
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
 SWP_NOOWNERZORDER = 0x0200
 
 HWND_TOPMOST = wintypes.HWND(-1)
+HWND_NOTOPMOST = wintypes.HWND(-2)
+HWND_BOTTOM = wintypes.HWND(1)
+GW_HWNDNEXT = 2
+GW_HWNDPREV = 3
+HWND_TOP = wintypes.HWND(0)
 
 user32.SetWindowPos.argtypes = [
     wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
@@ -56,19 +62,39 @@ user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetClassNameW.restype = ctypes.c_int
 user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
 user32.GetAsyncKeyState.restype = ctypes.c_short
+user32.GetTopWindow.argtypes = [wintypes.HWND]
+user32.GetTopWindow.restype = wintypes.HWND
+user32.GetWindow.argtypes = [wintypes.HWND, ctypes.c_uint]
+user32.GetWindow.restype = wintypes.HWND
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
+user32.IsIconic.argtypes = [wintypes.HWND]
+user32.IsIconic.restype = wintypes.BOOL
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wintypes.BOOL
+user32.GetShellWindow.argtypes = []
+user32.GetShellWindow.restype = wintypes.HWND
 
 
-def make_tool_window(hwnd: int) -> None:
-    """No focus stealing, no taskbar entry, no Alt-Tab entry."""
+def make_tool_window(hwnd: int, topmost: bool = True) -> None:
+    """No focus stealing, no taskbar entry, no Alt-Tab entry.
+
+    `topmost` decides which band it lands in. A desktop-layer widget wants
+    False, then push_bottom — otherwise this call would drag it to the top
+    and the two would fight each other every tick.
+    """
     h = wintypes.HWND(hwnd)
     cur = user32.GetWindowLongW(h, GWL_EXSTYLE)
     user32.SetWindowLongW(
         h, GWL_EXSTYLE, cur | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
     # a style change only takes effect once the frame is recalculated
-    user32.SetWindowPos(
-        h, HWND_TOPMOST, 0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED
-        | SWP_NOOWNERZORDER)
+    flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED \
+        | SWP_NOOWNERZORDER
+    if topmost:
+        user32.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, flags)
+    else:
+        user32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0,
+                            flags | SWP_NOZORDER)
 
 
 def raise_topmost(hwnd: int) -> bool:
@@ -78,9 +104,137 @@ def raise_topmost(hwnd: int) -> bool:
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER))
 
 
+def desktop_window() -> int:
+    """The highest window in the desktop layer.
+
+    Progman owns the desktop, but with a wallpaper slideshow a WorkerW
+    sits above it holding the actual bitmap. We want whichever is higher.
+    """
+    cur = user32.GetTopWindow(None)
+    while cur:
+        buf = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(cur, buf, 64)
+        if buf.value in ("Progman", "WorkerW") \
+                and user32.IsWindowVisible(cur):
+            return int(cur)
+        cur = user32.GetWindow(cur, GW_HWNDNEXT)
+    shell = user32.GetShellWindow()
+    return int(shell) if shell else 0
+
+
+def place_above_desktop(hwnd: int) -> bool:
+    """Sit immediately above the desktop window, wherever that is.
+
+    Three traps. HWND_BOTTOM is wrong because Show Desktop *raises* the
+    desktop above everything, so a window at the absolute bottom ends up
+    beneath the wallpaper. SetWindowPos's hWndInsertAfter places the window
+    *behind* the one you name, so naming the desktop puts you under it. And
+    HWND_NOTOPMOST is itself a z-order move — it lifts the window to the
+    top of the ordinary band — so calling it on a timer makes the window
+    flash above everything before being sunk again. Hence: clear topmost
+    only if it is actually set, and do nothing at all when already in the
+    right place.
+    """
+    h = wintypes.HWND(hwnd)
+    flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+    desk = desktop_window()
+    if not desk:
+        return False
+
+    below = user32.GetWindow(h, GW_HWNDNEXT)
+    if below and int(below) == desk and not is_topmost(hwnd):
+        return True                 # already correct — touch nothing
+
+    if is_topmost(hwnd):
+        user32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+        desk = desktop_window()     # that move may have shuffled things
+
+    above = user32.GetWindow(wintypes.HWND(desk), GW_HWNDPREV)
+    if not above or int(above) == hwnd:
+        return bool(user32.SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, flags))
+    return bool(user32.SetWindowPos(
+        h, wintypes.HWND(int(above)), 0, 0, 0, 0, flags))
+
+
+def push_bottom(hwnd: int) -> bool:
+    """Sink the window to the bottom of the z-order — above the wallpaper,
+    below every ordinary window.
+
+    This is how a desktop widget behaves: it is simply *there* on the
+    desktop, and anything you open covers it. Two calls are needed. The
+    first clears WS_EX_TOPMOST, because a window in the topmost band
+    cannot be moved below a normal one; the second drops it to the bottom.
+    """
+    h = wintypes.HWND(hwnd)
+    flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+    user32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+    return bool(user32.SetWindowPos(h, HWND_BOTTOM, 0, 0, 0, 0, flags))
+
+
+def is_at_bottom(hwnd: int) -> bool:
+    """True when no ordinary window sits below us — ignoring the shell,
+    which owns the wallpaper and always sits underneath everything."""
+    shell = {"Progman", "WorkerW"}
+    cur = user32.GetTopWindow(None)
+    seen_self = False
+    while cur:
+        if int(cur) == hwnd:
+            seen_self = True
+        elif seen_self and user32.IsWindowVisible(cur) \
+                and not user32.IsIconic(cur):
+            buf = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(cur, buf, 64)
+            if buf.value not in shell:
+                return False
+        cur = user32.GetWindow(cur, GW_HWNDNEXT)
+    return seen_self
+
+
+SW_SHOWNOACTIVATE = 4
+SW_MINIMIZE = 6
+
+
+def is_iconic(hwnd: int) -> bool:
+    return bool(user32.IsIconic(wintypes.HWND(hwnd)))
+
+
+def unminimise(hwnd: int) -> bool:
+    """Bring a minimised window back without giving it focus.
+
+    Show Desktop (Win+D) minimises every top-level window, tool windows
+    included, so a desktop-layer widget has to undo it.
+    """
+    return bool(user32.ShowWindow(wintypes.HWND(hwnd), SW_SHOWNOACTIVATE))
+
+
+def minimise(hwnd: int) -> bool:
+    return bool(user32.ShowWindow(wintypes.HWND(hwnd), SW_MINIMIZE))
+
+
 def is_topmost(hwnd: int) -> bool:
+    """Only the *style bit*. Do not trust this to mean the window is
+    actually drawn on top: Windows can leave WS_EX_TOPMOST set while
+    placing the window down in the ordinary z-order band, which is exactly
+    how the notch ended up buried under a maximised window. Use
+    is_really_topmost for the truth, or just re-assert unconditionally.
+    """
     ex = user32.GetWindowLongW(wintypes.HWND(hwnd), GWL_EXSTYLE)
     return bool(ex & WS_EX_TOPMOST)
+
+
+def is_really_topmost(hwnd: int) -> bool:
+    """Walk the z-order and check nothing non-topmost sits above us."""
+    cur = user32.GetTopWindow(None)
+    while cur:
+        if int(cur) == hwnd:
+            return True
+        if (user32.IsWindowVisible(cur)
+                and not user32.IsIconic(cur)
+                and not (user32.GetWindowLongW(cur, GWL_EXSTYLE)
+                         & WS_EX_TOPMOST)):
+            return False        # a normal window is above us
+        cur = user32.GetWindow(cur, GW_HWNDNEXT)
+    return False
 
 
 def foreground_window() -> int:

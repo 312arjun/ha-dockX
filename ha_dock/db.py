@@ -35,6 +35,10 @@ DEFAULTS = {
     "start_with_windows": "0",
     "desktop_shortcut": "0",
     "hide_on_fullscreen": "1",
+    "cord_enabled": "0",          # the Lampcord: a hanging bulb you pull
+    "cord_entity": "",            # one light entity
+    "cord_screen": "",            # empty = primary
+    "cord_offset_x": "620",       # along the top edge, 0 = centred
     "screen_name": "",            # empty = primary
 }
 

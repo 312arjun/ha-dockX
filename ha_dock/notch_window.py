@@ -106,7 +106,7 @@ class NotchWindow(QWidget):
         self._fullscreen_hidden = False
         self._fg = QTimer(self)
         self._fg.timeout.connect(self._watch_foreground)
-        self._fg.start(1200)
+        self._fg.start(500)
 
         # detail card: opens on dwell over a tile that has it enabled
         self.popup = TilePopup(client)
@@ -423,15 +423,20 @@ class NotchWindow(QWidget):
             pass
 
     def _ensure_topmost(self) -> None:
-        """Windows drops a window out of the topmost band when another app
-        maximises over it. Nothing warns you; the notch simply stops being
-        painted. Re-asserting on a slow timer is the only reliable fix, and
-        it is cheap."""
+        """Re-assert topmost, unconditionally.
+
+        Windows can leave WS_EX_TOPMOST set on the window while placing it
+        down in the ordinary z-order band, so the style bit reads True
+        while a maximised app sits on top of it. The previous version only
+        re-asserted when is_topmost() was False, which meant it never
+        fired — it was gated on a check that lies. SetWindowPos is a few
+        microseconds and a no-op when the order is already right, so there
+        is nothing to be gained by asking first.
+        """
         if win32 is None or not self.isVisible():
             return
         try:
-            if not win32.is_topmost(int(self.winId())):
-                win32.raise_topmost(int(self.winId()))
+            win32.raise_topmost(int(self.winId()))
         except Exception:
             pass
 

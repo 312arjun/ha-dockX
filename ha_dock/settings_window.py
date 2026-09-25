@@ -143,6 +143,7 @@ class SettingsWindow(QWidget):
         ("mdi6.link-variant", "Connection", "Home Assistant"),
         ("mdi6.format-list-bulleted", "Entities", "What the notch shows"),
         ("mdi6.monitor", "Appearance", "Where it sits"),
+        ("mdi6.ceiling-light", "Lampcord", "The bulb you pull"),
     )
 
     def __init__(self, store: db.Store, client, parent=None):
@@ -176,7 +177,7 @@ class SettingsWindow(QWidget):
         rail_lay.setSpacing(6)
 
         builders = (self._connection_page, self._entities_page,
-                    self._appearance_page)
+                    self._appearance_page, self._lampcord_page)
         for i, ((icon, title, subtitle), build) in enumerate(
                 zip(self.PAGES, builders)):
             entry = RailEntry(icon, title, subtitle, rail)
@@ -1120,6 +1121,113 @@ class SettingsWindow(QWidget):
             f"Appearance saved — {self.size_combo.currentText()} notch on "
             f"the {self.edge_combo.currentText()} edge")
 
+    # -- Lampcord ---------------------------------------------------------
+    def _lampcord_page(self) -> QWidget:
+        from PySide6.QtGui import QGuiApplication
+
+        self.save_cord_btn = PrimaryButton("Apply", "mdi6.check")
+        self.save_cord_btn.setMinimumHeight(44)
+        self.save_cord_btn.clicked.connect(self._save_lampcord)
+
+        page, lay = self._page("Lampcord", "The bulb you pull",
+                               self.save_cord_btn)
+
+        self.cord_enabled_tgl = Toggle(False)
+        self.cord_entity = QComboBox()
+        self.cord_entity.setEditable(True)
+        self.cord_entity.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.cord_entity.completer().setFilterMode(
+            Qt.MatchFlag.MatchContains)
+        self.cord_screen = QComboBox()
+        self.cord_screen.addItem("Primary", "")
+        for sc in QGuiApplication.screens():
+            self.cord_screen.addItem(
+                f"{sc.name()}  ({sc.geometry().width()}×"
+                f"{sc.geometry().height()})", sc.name())
+        self.cord_offset = QSpinBox()
+        self.cord_offset.setRange(-4000, 4000)
+        self.cord_offset.setSuffix("  px")
+        for c in (self.cord_entity, self.cord_screen, self.cord_offset):
+            c.setMinimumHeight(44)
+
+        card = Card()
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(28, 24, 28, 24)
+        cl.setSpacing(20)
+        cl.addWidget(SectionHeading("The fixture", "", False, card))
+        cl.addWidget(FieldRow("mdi6.ceiling-light", "Show the Lampcord",
+                              "A bulb on a chain, hanging from the top edge",
+                              self._toggle_cell(self.cord_enabled_tgl)))
+        cl.addWidget(FieldRow("mdi6.lightbulb", "Light",
+                              "Pulling the chain toggles this one light",
+                              self.cord_entity))
+        cl.addWidget(FieldRow("mdi6.monitor-multiple", "Monitor",
+                              "Which display it hangs from",
+                              self.cord_screen))
+        cl.addWidget(FieldRow("mdi6.arrow-left-right", "Offset along top",
+                              "Or just drag the fixture where you want it",
+                              self.cord_offset))
+        lay.addWidget(card)
+
+        note = text_label(
+            "The Lampcord sits on the desktop rather than on top of your "
+            "windows: anything you open covers it, and it is there again "
+            "when you clear the screen. Drag the bulb to slide it along "
+            "the top edge; drag the chain down and let go to toggle the "
+            "light.", 12, theme.MUTED)
+        note.setWordWrap(True)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(14)
+        row.addWidget(icon_label("mdi6.information-outline", 18, theme.MUTED),
+                      0, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(note, 1, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(row)
+        lay.addStretch(1)
+        return page
+
+    def _refresh_cord_entities(self) -> None:
+        """Lights only — the fixture is a light, and offering a switch or a
+        sensor here would be a control that cannot do what it depicts."""
+        lights = sorted(e for e in (self.known_ids
+                                    or self.client.states.keys())
+                        if e.startswith("light."))
+        current = self.store.get("cord_entity", "")
+        self.cord_entity.blockSignals(True)
+        self.cord_entity.clear()
+        self.cord_entity.addItems(lights)
+        self.cord_entity.setCurrentText(current)
+        self.cord_entity.blockSignals(False)
+
+    def _save_lampcord(self) -> None:
+        entity = self.cord_entity.currentText().strip()
+        enabled = self.cord_enabled_tgl.isChecked()
+        if enabled and not entity.startswith("light."):
+            self.toast.show_message(
+                "Pick a light first — the Lampcord needs one", ok=False)
+            return
+        self.store.set("cord_enabled", 1 if enabled else 0)
+        self.store.set("cord_entity", entity)
+        self.store.set("cord_screen", self.cord_screen.currentData() or "")
+        self.store.set("cord_offset_x", self.cord_offset.value())
+        self.config_changed.emit()
+        self.toast.show_message(
+            f"Lampcord {'on' if enabled else 'off'}"
+            + (f" — pulls {entity}" if enabled and entity else ""))
+
+    def set_cord_offset(self, offset_x: int) -> None:
+        """Dragging the fixture is the other way of setting this."""
+        self.cord_offset.blockSignals(True)
+        self.cord_offset.setValue(offset_x)
+        self.cord_offset.blockSignals(False)
+
+    def refresh_entity_lists(self) -> None:
+        """Called when a snapshot arrives. The pickers are built from the
+        live entity list, so without this they stay empty until the window
+        is next reopened."""
+        self.known_ids = sorted(self.client.states.keys())
+        self._refresh_cord_entities()
+
     # -- load -------------------------------------------------------------
     def _load(self) -> None:
         self.url_edit.setText(self.store.get("ha_url"))
@@ -1142,6 +1250,12 @@ class SettingsWindow(QWidget):
         self.fullscreen_tgl.setChecked(
             self.store.get_bool("hide_on_fullscreen", True), animate=False)
         self.known_ids = sorted(self.client.states.keys())
+        self.cord_enabled_tgl.setChecked(
+            self.store.get_bool("cord_enabled", False), animate=False)
+        cidx = self.cord_screen.findData(self.store.get("cord_screen", ""))
+        self.cord_screen.setCurrentIndex(max(cidx, 0))
+        self.cord_offset.setValue(self.store.get_int("cord_offset_x", 620))
+        self._refresh_cord_entities()
         self._load_entities()
 
     def closeEvent(self, ev):
