@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog,
 
 from . import (__version__, db, dialogs, domains, glyph, ha_client, theme,
                ui_kit)
+from .native_resize import native_resize_event
 from .tile_popup import supports_popup
 from .ui_kit import (Card, DangerButton, FieldRow, GhostButton, PrimaryButton,
                      RailEntry, RailFooter, ReorderTable, SectionHeading,
@@ -134,6 +135,7 @@ class SettingsWindow(QWidget):
     reconnect_requested = Signal()
     disconnect_requested = Signal()
     quit_requested = Signal()
+    update_requested = Signal()
 
     COLS = ["", "Shown", "Entity", "Label", "Icon", "Ring", "Min", "Max",
             "Tile", "On colour", "Card"]
@@ -188,7 +190,9 @@ class SettingsWindow(QWidget):
             rail_lay.addWidget(entry)
             self.stack.addWidget(build())
         rail_lay.addStretch(1)
-        rail_lay.addWidget(RailFooter(__version__, rail))
+        self.rail_footer = RailFooter(__version__, rail)
+        self.rail_footer.update_requested.connect(self.update_requested.emit)
+        rail_lay.addWidget(self.rail_footer)
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -203,12 +207,12 @@ class SettingsWindow(QWidget):
         shell.addLayout(body, 1)
 
         outer = QVBoxLayout(self)
-        # a transparent border wide enough to grab for resizing; without it
-        # the child widgets take every mouse event and the edges are dead
-        outer.setContentsMargins(*([ui_kit.EdgeResizer.MARGIN] * 4))
+        # WM_NCHITTEST resizing (native_resize.py) needs no layout margin —
+        # Windows itself decides "this is an edge" before any Qt widget
+        # sees the click, so content can run flush to the window bounds.
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.root)
 
-        self.resizer = ui_kit.EdgeResizer(self)
         self.toast = ui_kit.Toast(self.root)
 
         self._apply_style()
@@ -224,20 +228,12 @@ class SettingsWindow(QWidget):
         if getattr(self, "toast", None) is not None:
             self.toast._reposition()
 
-    # -- frameless window resizing ----------------------------------------
-    def mousePressEvent(self, ev):
-        if ev.button() == Qt.MouseButton.LeftButton and \
-                self.resizer.begin(ev.position().toPoint()):
-            return
-        super().mousePressEvent(ev)
-
-    def mouseMoveEvent(self, ev):
-        self.resizer.update_cursor(ev.position().toPoint())
-        super().mouseMoveEvent(ev)
-
-    def leaveEvent(self, ev):
-        self.unsetCursor()
-        super().leaveEvent(ev)
+    # -- frameless window resizing (native, via WM_NCHITTEST) -------------
+    def nativeEvent(self, event_type, message):
+        result = native_resize_event(self, event_type, message)
+        if result is not None:
+            return result
+        return super().nativeEvent(event_type, message)
 
     def set_page(self, index: int) -> None:
         self.stack.setCurrentIndex(index)

@@ -94,6 +94,8 @@ class Application:
         self.settings.config_changed.connect(self._config_changed)
         self.settings.reconnect_requested.connect(self.reconnect)
         self.settings.disconnect_requested.connect(self.disconnect)
+        self.settings.update_requested.connect(
+            lambda: self.check_for_updates(silent=False))
         self.settings.quit_requested.connect(self.quit)
 
         self.client.status.connect(self._on_status)

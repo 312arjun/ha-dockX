@@ -1,15 +1,16 @@
 """Reusable pieces for the settings window.
 
 Qt's stock widgets carry a lot of platform chrome that fights the design,
-so the parts that need to look exactly right — the title bar, the toggle,
-the primary button, the status pill — are painted here instead.
+so the parts that need to look exactly right â€” the title bar, the toggle,
+the primary button, the status pill â€” are painted here instead.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import (QEasingCurve, QPoint, QPropertyAnimation, QRectF,
+from PySide6.QtCore import (QEasingCurve, QPoint, QPropertyAnimation, QRect,
+                            QRectF,
                             QSize, Qt, Property, Signal, QTimer)
 from PySide6.QtGui import (QColor, QFont, QIcon, QImage, QPainter, QPen,
                            QPixmap)
@@ -75,7 +76,7 @@ def _keyed(pm: QPixmap, threshold: int = 26) -> QPixmap:
 
 def button_icon(name: str, size: int, color: str) -> QIcon:
     """Accepts a qtawesome name or a file in assets/. A supplied image is
-    used as-is — recolouring someone's artwork would defeat the point."""
+    used as-is â€” recolouring someone's artwork would defeat the point."""
     if name.lower().endswith((".png", ".svg", ".ico", ".jpg")):
         path = Path(name)
         if not path.is_absolute():
@@ -172,7 +173,7 @@ class SectionHeading(QWidget):
 
 
 class StatusPill(QFrame):
-    """Dot, state word, and a quiet timestamp — one glanceable unit."""
+    """Dot, state word, and a quiet timestamp â€” one glanceable unit."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -544,7 +545,7 @@ class AppBadge(QLabel):
 
 
 def app_icon(size: int = 256, colour: str = "") -> QPixmap:
-    """The bare mark, no plate — for the tray, the taskbar and the .ico."""
+    """The bare mark, no plate â€” for the tray, the taskbar and the .ico."""
     pm = QPixmap(QSize(size, size))
     pm.fill(Qt.GlobalColor.transparent)
     q = QPainter(pm)
@@ -633,6 +634,15 @@ class TitleBar(Styled):
             w.showNormal()
         else:
             w.showMaximized()
+        self._refresh_max_icon()
+
+    def _refresh_max_icon(self) -> None:
+        # Edges cannot be dragged while maximised â€” every OS window behaves
+        # this way â€” but a frameless window has no border to make that
+        # obvious, so the icon is the only cue that it is currently true.
+        icon = ("mdi6.window-restore" if self.window_ref.isMaximized()
+               else "mdi6.window-maximize")
+        self.btn_max.setIcon(QIcon(icon_pixmap(icon, 15, theme.TEXT_DIM)))
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton:
@@ -654,12 +664,33 @@ class TitleBar(Styled):
 class RailFooter(QWidget):
     """Identity block at the foot of the rail."""
 
+    update_requested = Signal()
+
     def __init__(self, version: str, parent=None):
         super().__init__(parent)
         badge = AppBadge(52, self)
         name = text_label("HA Dock", 20, theme.TEXT, QFont.Weight.DemiBold,
                           self)
+        ver_row = QHBoxLayout()
+        ver_row.setContentsMargins(0, 0, 0, 0)
+        ver_row.setSpacing(6)
         ver = text_label(f"v{version}", 12, theme.MUTED, parent=self)
+        self.update_btn = QPushButton(self)
+        self.update_btn.setFlat(True)
+        self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_btn.setToolTip("Check for updates")
+        self.update_btn.setIcon(QIcon(icon_pixmap(
+            "mdi6.cloud-download-outline", 13, theme.MUTED)))
+        self.update_btn.setIconSize(QSize(13, 13))
+        self.update_btn.setFixedSize(22, 22)
+        self.update_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: 0; }"
+            f"QPushButton:hover {{ background: {theme.HAIRLINE};"
+            " border-radius: 5px; }}")
+        self.update_btn.clicked.connect(self.update_requested.emit)
+        ver_row.addWidget(ver)
+        ver_row.addWidget(self.update_btn)
+        ver_row.addStretch(1)
         tag = text_label("A smaller window\nfor a smarter home", 12,
                          theme.MUTED, parent=self)
 
@@ -669,7 +700,7 @@ class RailFooter(QWidget):
         lay.addWidget(badge)
         lay.addSpacing(6)
         lay.addWidget(name)
-        lay.addWidget(ver)
+        lay.addLayout(ver_row)
         lay.addSpacing(4)
         lay.addWidget(tag)
         self.setStyleSheet("background: transparent;")
@@ -683,7 +714,7 @@ class ReorderTable(QTableWidget):
     (combo boxes, spin boxes, buttons) and those do not travel with a moved
     row, so the move leaves the controls behind. Instead the drag is
     tracked by hand and the reorder is applied to the store, which then
-    rebuilds the rows — widgets and all.
+    rebuilds the rows â€” widgets and all.
     """
 
     reordered = Signal(int, int)        # from_row, to_row
@@ -860,68 +891,3 @@ class Toast(Styled):
                   max(12, p.height() - self.height() - 28))
 
 
-class EdgeResizer:
-    """Edge and corner resizing for a frameless window.
-
-    The work is handed to the platform with startSystemResize rather than
-    recomputing geometry on every mouse move. That buys native resize
-    cursors, Aero Snap and correct behaviour on a multi-monitor desktop —
-    all of which a hand-rolled version gets subtly wrong.
-
-    The window needs a transparent margin at least MARGIN wide, or there is
-    nowhere to grab: child widgets consume the events everywhere else.
-    """
-
-    MARGIN = 7
-
-    def __init__(self, window: QWidget):
-        self.w = window
-        window.setMouseTracking(True)
-
-    def edge_at(self, pos: QPoint) -> Qt.Edge:
-        m = self.MARGIN
-        w, h = self.w.width(), self.w.height()
-        edges = Qt.Edge(0)
-        if pos.x() <= m:
-            edges |= Qt.Edge.LeftEdge
-        elif pos.x() >= w - m:
-            edges |= Qt.Edge.RightEdge
-        if pos.y() <= m:
-            edges |= Qt.Edge.TopEdge
-        elif pos.y() >= h - m:
-            edges |= Qt.Edge.BottomEdge
-        return edges
-
-    @staticmethod
-    def cursor_for(edges: Qt.Edge) -> Qt.CursorShape:
-        left = bool(edges & Qt.Edge.LeftEdge)
-        right = bool(edges & Qt.Edge.RightEdge)
-        top = bool(edges & Qt.Edge.TopEdge)
-        bottom = bool(edges & Qt.Edge.BottomEdge)
-        if (left and top) or (right and bottom):
-            return Qt.CursorShape.SizeFDiagCursor
-        if (right and top) or (left and bottom):
-            return Qt.CursorShape.SizeBDiagCursor
-        if left or right:
-            return Qt.CursorShape.SizeHorCursor
-        if top or bottom:
-            return Qt.CursorShape.SizeVerCursor
-        return Qt.CursorShape.ArrowCursor
-
-    def update_cursor(self, pos: QPoint) -> None:
-        if self.w.isMaximized():
-            self.w.unsetCursor()
-            return
-        self.w.setCursor(self.cursor_for(self.edge_at(pos)))
-
-    def begin(self, pos: QPoint) -> bool:
-        """True if a resize was started, so the caller can stop there."""
-        if self.w.isMaximized():
-            return False
-        edges = self.edge_at(pos)
-        if not edges:
-            return False
-        handle = self.w.windowHandle()
-        if handle is None:
-            return False
-        return bool(handle.startSystemResize(edges))
